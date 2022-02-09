@@ -1,53 +1,69 @@
 global {
-    ducttape_output="/projects/tir4/users/pfernand/workflows-outputs/qaware-flores101"
+    ducttape_output="/projects/tir4/users/aogayo/workflows-outputs/qaware-flores101-dsta-large"
     ducttape_experimental_imports=true
     ducttape_experimental_submitters=true
     submitter="slurm"
+    .exclude="tir-0-17,tir-1-13"
 
-    repo=/home/pfernand/repos/qaware-decoding/
+    repo=/home/aogayo/repos/dsta-qaware-decoding/
     comet_dir=/projects/tir1/users/pfernand/comet-v3/
-    bleurt_dir=""
-    bleurt_venv=""
+    bleurt_dir=/projects/tir1/users/pfernand/bleurt/BLEURT-20/
+    bleurt_venv=/home/pfernand/repos/qaware-decoding/.bleurt_venv
+    mbartqe_dir=/projects/tir1/users/pfernand/mbart-qe/
+    openkiwi_model=""
+    openkiwi_venv=""
 
     train_dir=""
-    devtest_dir="/projects/tir1/corpora/sentence-mt/flores101/"
-    
-    pretrained_model=/projects/tir4/users/wmt21/pretrained_models/flores101_mm100_615M
+    devtest_dir="/projects/tir4/users/aogayo/flores101-data/dsta-devtest/"
+
+    pretrained_model=/projects/tir2/users/pfernand/models/flores101_mm100_615M
     is_multilingual=true
     bpe_type=sentencepiece
     use_labelsmooth=False
 
     src_lang=en
-    tgt_lang=hu
+    tgt_lang=(
+    TargetLang:
+        my="my"
+        tl="tl"
+        jv="jv"
+        km="km"
+        lo="lo"
+        ms="ms"
+        th="th"
+        vi="vi"
+        )
 
     # Decoding Arguments
     infer_batchsize=(
         NBest:
-            5=64
-            20=32
-            50=16
-            100=4
-            200=2
+            5=32
+            10=16
+            20=8
+            50=4
+            100=2
+            200=1
     )
     sampling=(
         DecodeType:
             beam_search=false
             sampling=true
-            nucleus_80=true
-            nucleus_70=true
+            nucleus_30=true
             nucleus_60=true
-            nucleus_50=true
-            nucleus_40=true
     )
     sampling_topp=(
         DecodeType:
             beam_search=""
             sampling=""
-            nucleus_80=0.8
-            nucleus_70=0.7
+            nucleus_30=0.3
             nucleus_60=0.6
-            nucleus_50=0.5
-            nucleus_40=0.4
+    )
+    diversity_rate=(
+        DecodeType:
+            beam_search=-1
+            sampling=-1
+            nucleus_30=-1
+            nucleus_60=-1
     )
 
     rerank=(
@@ -55,16 +71,26 @@ global {
             false=false
             fixed=fixed
             train=train
+            oracle=oracle
     )
     rerank_weights=(
         Rerank:
             false=""
             fixed=(
                 RerankMetric:
-                    cometsrc="logprob=0 cometsrc=1 transquest=0"
-                    transquest="logprob=0 cometsrc=0 transquest=1"
+                    cometsrc="logprob=0 cometsrc=1 transquest=0 mbart-prediction=0 mbart-uncertainty=0 openkiwi=0"
+                    transquest="logprob=0 cometsrc=0 transquest=1 mbart-prediction=0 mbart-uncertainty=0 openkiwi=0"
+                    mbart_qe="logprob=0 cometsrc=0 transquest=0 mbart-prediction=1 mbart-uncertainty=0 openkiwi=0"
+                    openkiwi="logprob=0 cometsrc=0 transquest=0 mbart-prediction=0 mbart-uncertainty=0 openkiwi=1"
             )
-            train="logprob=1 cometsrc=0.1 transquest=0.1"
+            train="logprob=1 cometsrc=0.1 transquest=0.1 mbart-prediction=0.1 mbart-uncertainty=0.1 openkiwi=0.1"
+            oracle=(
+                RerankEval:
+                    bleu="bleu=1"
+                    comet="comet=1"
+                    bleurt="bleurt=1"
+            )
+
     )
     rerank_eval=(
         Rerank:
@@ -76,6 +102,7 @@ global {
                     comet="comet"
                     bleurt="bleurt"
             )
+            oracle=""
     )
 
     mbr_metric=(
@@ -85,22 +112,30 @@ global {
             bleurt="bleurt"
     )
 
-    nbest=(
-        NBest:
-            5=5
-            20=20
-            50=50
-            100=100
-            200=200
-    )
+    mbr_samples=(MBRSamples: 5 10 20 50 100 200)
+    nbest=(NBest: 5 10 20 50 100 200)
 
     seed=9
 }
 
 plan Baseline {
-    reach ScoreTranslations via (UsePretrained: true)
+    reach ScoreTranslations via (UsePretrained: true) * (TargetLang: *)
 }
 
 plan Rerank {
-    reach ScoreTranslations via (UsePretrained: true) * (Rerank: fixed train)
+    reach ScoreTranslations via (UsePretrained: true) * (TargetLang: *) * (DecodeType: beam_search nucleus_60) * (NBest: 5 10 20 50 200) * (Rerank: fixed) * (RerankMetric: cometsrc)
+    reach ScoreTranslations via (UsePretrained: true) * (TargetLang: *) * (DecodeType: beam_search nucleus_60) * (NBest: 5 10 20 50 200) * (Rerank: train) * (RerankEval: comet bleu)
+    reach ScoreTranslations via (UsePretrained: true) * (TargetLang: *) * (DecodeType: nucleus_30) * (NBest: 5 10 20 50) * (Rerank: fixed) * (RerankMetric: cometsrc)
+    reach ScoreTranslations via (UsePretrained: true) * (TargetLang: *) * (DecodeType: nucleus_30) * (NBest: 5 10 20 50) * (Rerank: train) * (RerankEval: comet bleu)
 }
+
+plan RerankOracle {
+    reach ScoreTranslations via (UsePretrained: true) * (TargetLang: *) * (DecodeType: beam_search nucleus_30 nucleus_60) * (NBest: 5 10 20 50 200) * (Rerank: oracle) * (RerankEval: bleu comet)
+}
+
+
+plan MBRDecoding {
+    reach ScoreTranslations via (UsePretrained: true) * (TargetLang: *) * (DecodeType: beam_search nucleus_60 ) * (NBest: 5) * (MBRSamples: 5) * (MBRDecoding: true) * (MBRMetric: comet)
+    reach ScoreTranslations via (UsePretrained: true) * (TargetLang: *) * (DecodeType: beam_search nucleus_60 ) * (NBest: 20) * (MBRSamples: 20) * (MBRDecoding: true) * (MBRMetric: comet)
+    reach ScoreTranslations via (UsePretrained: true) * (TargetLang: *) * (DecodeType: beam_search nucleus_60 ) * (NBest: 50) * (MBRSamples: 50) * (MBRDecoding: true) * (MBRMetric: bleurt bleu comet)
+     }

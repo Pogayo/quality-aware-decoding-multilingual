@@ -6,8 +6,8 @@ submitter slurm_emulator :: COMMANDS TASK_VARIABLES CONFIGURATION {
         echo "set -e # stop on errors" >> $wrapper
         echo "set -o pipefail # stop on pipeline errors" >> $wrapper
         echo "set -u # stop on undeclared variables" >> $wrapper
-    
-        # print actual jobs 
+
+        # print actual jobs
         echo "$COMMANDS" >> $wrapper
         if (var_defined gres); then
             if [ $gres = "gpu:1" ]; then

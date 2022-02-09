@@ -69,6 +69,7 @@ task TrainBPE
     :: bpe_type=@
     :: vocab_size=20000
 {
+    set -x
     cat $train_src $train_tgt > train.all 
     python $repo/scripts/bpe_train.py train.all \
         --bpe-type $bpe_type \
@@ -76,9 +77,9 @@ task TrainBPE
         --vocab-file vocab \
         --vocab-size $vocab_size
 
-    ln -s vocab $src_dict
-    ln -s vocab $tgt_dict
-    ln -s bpe_model.model $bpe_model
+    ln -sf vocab $src_dict
+    ln -sf vocab $tgt_dict
+    ln -sf bpe_model.model $bpe_model
 }
 
 
@@ -165,7 +166,7 @@ task BinarizeData
             false=$tgt_dict@TrainBPE
         )
     > bin_dir
-    :: .submitter=@ .cpus=8 .mem=32000M .exclude=tir-1-11
+    :: .submitter=@ .cpus=8 .mem=32000M 
     :: repo=@
     :: src_lang=@
     :: tgt_lang=@
@@ -267,6 +268,7 @@ func GenerateTranslations
     :: infer_batchsize
     :: sampling
     :: sampling_topp
+    :: diversity_rate
     :: nbest
 {
     # TODO: test this
@@ -290,6 +292,7 @@ func GenerateTranslations
         $([ "$bpe_type" = "fastbpe" ] && echo "--tokenizer moses" || echo "")  \
         $([ "$sampling" = true ] && echo "--sampling" || echo "") \
         $([ ! -z "$sampling_topp"  ] && echo "--sampling-topp $sampling_topp" || echo "") \
+        --diversity-rate $diversity_rate \
         --beam $nbest \
         --nbest $nbest \
             > full_outputs 
@@ -320,6 +323,7 @@ task GenerateTranslationsDev calls GenerateTranslations
     :: infer_batchsize=@
     :: sampling=@
     :: sampling_topp=@
+    :: diversity_rate=@
     :: nbest=@
 
 
@@ -343,30 +347,72 @@ task GenerateTranslationsTest calls GenerateTranslations
     :: infer_batchsize=@
     :: sampling=@
     :: sampling_topp=@
+    :: diversity_rate=@
     :: nbest=@
 
 
-task ComputeFeaturesDev
-    < src=$dev_src@GetDevTestData
-    < tgt=$dev_tgt@GetDevTestData
-    < scores=@GenerateTranslationsDev
-    < pred_nbest=$predictions@GenerateTranslationsDev
+func ComputeFeatures
+    < src
+    < scores
+    < pred_nbest
     > features
-    > metrics
-    :: .submitter=@ .gres="gpu:1" .cpus=5 .mem=32000M .time=0
-    :: repo=@
-    :: comet_dir=@
-    :: bleurt_dir=@
-    :: bleurt_venv=@
-    :: nbest=@
+    :: repo
+    :: src_lang
+    :: tgt_lang
+    :: comet_dir
+    :: mbartqe_dir
+    :: openkiwi_model
+    :: openkiwi_venv
+    :: nbest
 {
     python $repo/scripts/rerank_prepare.py \
         $pred_nbest $scores $features \
         --nbest $nbest \
+        --lp "$src_lang-$tgt_lang" \
         --add-cometsrc $comet_dir \
         --add-transquest \
         --src $src
-    
+    if [ ! -z $openkiwi_venv ] && [ ! -z $openkiwi_model ]; then
+        source $openkiwi_venv/bin/activate
+        python $repo/scripts/rerank_prepare.py \
+        $pred_nbest $scores openkiwi_features \
+            --nbest $nbest \
+            --add-openkiwi $openkiwi_model \
+            --src $src
+        grep "openkiwi=[-0-9]*\.[0-9]*" -o openkiwi_features > grepped_openkiwi
+        mv $features other_features
+        paste -d' ' other_features grepped_openkiwi > $features
+    fi
+}
+
+
+task ComputeFeaturesDev calls ComputeFeatures
+    < src=$dev_src@GetDevTestData
+    < scores=@GenerateTranslationsDev
+    < pred_nbest=$predictions@GenerateTranslationsDev
+    > features
+    :: .submitter=@ .gres="gpu:1" .cpus=5 .mem=32000M .time=0
+    :: repo=@
+    :: src_lang=@
+    :: tgt_lang=@
+    :: comet_dir=@
+    :: mbartqe_dir=@
+    :: openkiwi_model=@
+    :: openkiwi_venv=@
+    :: nbest=@
+
+
+func ComputeMetrics
+    < src
+    < tgt
+    < pred_nbest
+    > metrics
+    :: repo
+    :: comet_dir
+    :: bleurt_dir
+    :: bleurt_venv
+    :: nbest
+{
     awk "{while(i++<$nbest)print;i=0}" $tgt > tgt_repeat
     awk "{while(i++<$nbest)print;i=0}" $src > src_repeat
     python $repo/scripts/score.py \
@@ -385,35 +431,58 @@ task ComputeFeaturesDev
     fi
 }
 
+task ComputeMetricsDev calls ComputeMetrics
+    < src=$dev_src@GetDevTestData
+    < tgt=$dev_tgt@GetDevTestData
+    < pred_nbest=$predictions@GenerateTranslationsDev
+    > metrics
+    :: .submitter=@ .gres="gpu:1" .cpus=5 .mem=32000M .time=0 .exclude=tir-0-19,tir-1-28
+    :: repo=@
+    :: comet_dir=@
+    :: bleurt_dir=@
+    :: bleurt_venv=@
+    :: nbest=@
 
-task ComputeFeaturesTest
+
+task ComputeMetricsTest calls ComputeMetrics
     < src=$test_src@GetDevTestData
     < tgt=$test_tgt@GetDevTestData
+    < pred_nbest=$predictions@GenerateTranslationsTest
+    > metrics
+    :: .submitter=@ .gres="gpu:1" .cpus=5 .mem=32000M .time=0 .exclude=tir-0-19,tir-1-28
+    :: repo=@
+    :: comet_dir=@
+    :: bleurt_dir=@
+    :: bleurt_venv=@
+    :: nbest=@
+
+
+task ComputeFeaturesTest calls ComputeFeatures
+    < src=$test_src@GetDevTestData
     < scores=@GenerateTranslationsTest
     < pred_nbest=$predictions@GenerateTranslationsTest
     > features
-    :: .submitter=@ .gres="gpu:1" .cpus=5 .mem=32000M .time=0 
+    :: .submitter=@ .gres="gpu:1" .cpus=5 .mem=32000M .time=0  .exclude=tir-0-19,tir-1-28
     :: repo=@
+    :: src_lang=@
+    :: tgt_lang=@
     :: comet_dir=@
+    :: mbartqe_dir=@
+    :: openkiwi_model=@
+    :: openkiwi_venv=@
     :: nbest=@
-{
-    python $repo/scripts/rerank_prepare.py \
-        $pred_nbest $scores $features \
-        --nbest $nbest \
-        --add-cometsrc $comet_dir \
-        --add-transquest \
-        --src $src
-}
 
 
 task RerankTranslations
     < dev_tgt=@GetDevTestData
     < dev_features=$features@ComputeFeaturesDev
-    < dev_metrics=$metrics@ComputeFeaturesDev
+    < dev_metrics=$metrics@ComputeMetricsDev
     < test_nbest=$predictions@GenerateTranslationsTest
     < test_features=$features@ComputeFeaturesTest
-    > predictions
-    :: .submitter=@ .cpus=5 .mem=32000M .time=0
+    < test_metrics=$metrics@ComputeMetricsTest
+    > reranked_nbest
+    > reranked_features
+    :: .submitter=@ .cpus=5 .mem=32000M .time=0  .exclude=tir-0-19,tir-1-28,tir-1-11
     :: repo=@
     :: comet_dir=@
     :: rerank=@
@@ -423,58 +492,106 @@ task RerankTranslations
 {
     if [ "$rerank" != false ]; then
         echo "$rerank_weights" > weights.txt
+        cp $test_features test_features.txt
         
         if [ "$rerank" == "train" ]; then
             mv weights.txt weights_init.txt
             sed -rn "s/.*${rerank_eval}=([-0-9.]+).*/\1 1/p" $dev_metrics > dev_metric
             $repo/scripts/rerank_train.sh weights_init.txt $dev_features $dev_tgt dev_metric > weights.txt
         fi
-        $repo/scripts/rerank.sh weights.txt $test_features > $predictions
+
+        if [ "$rerank" == "oracle" ]; then
+            paste -d ' ' $test_features $test_metrics > test_features.txt
+        fi
+
+        $repo/scripts/rerank.sh weights.txt test_features.txt $reranked_features
     else
-        awk "NR % $nbest == 1" $test_nbest > $predictions 
+        cp $test_features $reranked_features
     fi
+
+    awk -F' [|][|][|] ' '{print $2}' $reranked_features > $reranked_nbest
 }
 
-task MBRDecoding
-    < test_src=$test_src@GetDevTestData
-    < test_nbest=$predictions@GenerateTranslationsTest
+task PickBestRanked
+    < reranked_nbest=@RerankTranslations
     > predictions
-    :: .submitter=@ .gres="gpu:1" .cpus=5 .mem=32000M .time=0 
+    :: .submitter=shell
+    :: nbest=@
+{
+    awk "NR % $nbest == 1" $reranked_nbest > $predictions
+}
+
+task MBRPairwiseCompare
+    < test_src=$test_src@GetDevTestData
+    < test_nbest=$reranked_nbest@RerankTranslations
+    > mbr_matrixes="mbr_matrixes.npy"
+    :: .submitter=@ .cpus=5  .gres="gpu:1" .mem=10G .time=0 .exclude="tir-0-[7,9,13,15,17,19],tir-1-13,tir-1-28,tir-1-11"
     :: repo=@
     :: comet_dir=@
     :: bleurt_dir=@
     :: bleurt_venv=@
     :: mbr_metric=@
+    :: mbr_samples=@
     :: nbest=@
 {
+    if [ "$mbr_samples" -gt $nbest ]; then
+       echo "mbr_samples must be less than or equal to nbest"
+       exit 1
+    fi
+
+    awk "(NR-1) % $nbest < $mbr_samples" $test_nbest > test_samples
+
     if [ "$mbr_metric" == "bleurt" ]; then
         if [ -z "$bleurt_dir"  ] || [ -z "$bleurt_venv" ]; then
             echo "bleurt_dir and bleurt_venv must be set if mbr_metric is bleurt"
+            exit 1
         fi
 
         source $bleurt_venv/bin/activate
     fi
 
     python $repo/qaware_decoding/mbr_decoding.py \
-        $test_nbest \
-        --num-samples $nbest \
+        test_samples \
+        --num-samples $mbr_samples \
         --src $test_src \
         --metric $mbr_metric \
         --comet-dir $comet_dir \
-        --bleurt-dir $bleurt_dir > $predictions
+        --bleurt-dir $bleurt_dir \
+        --save-metric-matrixes $mbr_matrixes > /dev/null
 }
 
+task MBRDecoding
+    < test_nbest=$reranked_nbest@RerankTranslations
+    < mbr_matrixes=@MBRPairwiseCompare
+    > predictions
+    :: .submitter=@ .cpus=5 .gres="gpu:1"  .mem=10G .time=0 .exclude=tir-0-19,tir-1-28,tir-1-11
+    :: repo=@
+    :: mbr_samples=@
+    :: nbest=@
+{
+    if [ "$mbr_samples" -gt $nbest ]; then
+       echo "mbr_samples must be less than or equal to nbest"
+       exit 1
+    fi
+
+    awk "(NR-1) % $nbest < $mbr_samples" $test_nbest > test_samples
+
+    python $repo/qaware_decoding/mbr_decoding.py \
+        test_samples \
+        --num-samples $mbr_samples \
+        --metric-matrixes $mbr_matrixes > $predictions
+}
 
 task ScoreTranslations
     < test_src=@GetDevTestData
     < test_tgt=@GetDevTestData
     < predictions=(
         MBRDecoding:
-            false=$predictions@RerankTranslations
+            false=$predictions@PickBestRanked
             true=$predictions@MBRDecoding
     )
     > score
-    :: .submitter=@ .gres="gpu:1" .cpus=4 .mem=16000M
+    :: .submitter=@ .gres="gpu:1" .cpus=4 .mem=16000M .time=0  .exclude=tir-0-19,tir-1-28,tir-1-11
     :: repo=@
     :: src_lang=@
     :: tgt_lang=@
