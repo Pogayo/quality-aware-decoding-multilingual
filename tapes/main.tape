@@ -612,6 +612,42 @@ task ScoreTranslations
     fi
 }
 
+task PredictDev
+    < dev_features=$features@ComputeFeaturesDev
+    < dev_metrics=$metrics@ComputeMetricsDev
+    > dev_predictions
+    :: .submitter=shell
+    :: nbest=@
+    {
+        awk -F' [|][|][|] ' '{print $2}' $dev_features > dev_nbest
+        awk "NR % $nbest == 1" dev_nbest > dev_predictions
+    }
+
+task ScoreTranslationsDev
+    < dev_src=@GetDevTestData
+    < dev_tgt=@GetDevTestData
+    < dev_predictions=@PredictDev
+    > dev_score
+    :: .submitter=@ .gres="gpu:1" .cpus=4 .mem=16000M .time=0  .exclude=tir-0-19,tir-1-28,tir-1-11
+    :: repo=@
+    :: src_lang=@
+    :: tgt_lang=@
+    :: comet_dir=@
+    :: bleurt_dir=@
+    :: bleurt_venv=@
+{
+    python $repo/scripts/score.py \
+        $dev_predictions $dev_tgt --src $dev_src \
+        --comet-dir $comet_dir > $dev_score
+
+    if [ ! -z "$bleurt_dir"  ] && [ ! -z "$bleurt_venv" ]; then
+        source $bleurt_venv/bin/activate
+        python $repo/scripts/score.py \
+            $predictions $test_tgt --src $test_src \
+            --bleurt-dir $bleurt_dir \
+            --no-lexical-metrics >> $score
+    fi
+}
 
 summary TranslationQuality {
   of ScoreTranslations >  bleu comet chrf ter bleurt {
@@ -624,4 +660,17 @@ summary TranslationQuality {
         echo "---" > $bleurt
     fi  
    }
+
+summary TranslationQualityDev {
+  of ScoreTranslationsDev >  bleu comet chrf ter bleurt {
+    cat $dev_score | grep -oP "COMET = \K[-0-9.]+" > $comet
+    cat $dev_score | grep -oP "BLEU = \K[-0-9.]+" > $bleu
+    cat $dev_score | grep -oP "chrF2 = \K[-0-9.]+" > $chrf
+    cat $dev_score | grep -oP "TER = \K[-0-9.]+" > $ter
+    cat $dev_score | grep -oP "BLEURT = \K[-0-9.]+" > $bleurt || true
+    if [ ! -s $bleurt ]; then
+        echo "---" > $bleurt
+    fi
+   }
+
 }

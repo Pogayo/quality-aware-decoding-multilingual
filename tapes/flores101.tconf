@@ -122,6 +122,10 @@ plan Baseline {
     reach ScoreTranslations via (UsePretrained: true) * (TargetLang: *)
 }
 
+plan ScoreDevBaseline {
+     reach ScoreTranslationsDev via (UsePretrained: true) * (TargetLang: *)
+ }
+
 plan Rerank {
     reach ScoreTranslations via (UsePretrained: true) * (TargetLang: *) * (DecodeType: beam_search nucleus_60) * (NBest: 5 10 20 50 200) * (Rerank: fixed) * (RerankMetric: cometsrc)
     reach ScoreTranslations via (UsePretrained: true) * (TargetLang: *) * (DecodeType: beam_search nucleus_60) * (NBest: 5 10 20 50 200) * (Rerank: train) * (RerankEval: comet bleu)

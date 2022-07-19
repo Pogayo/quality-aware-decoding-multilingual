@@ -53,3 +53,18 @@ ducttape tapes/main.tape -C $my_tconf -p Baseline -j $num_jobs
 ```
 
 `$num_jobs` corresponds to the number of jobs to run in parallel. `num_jobs=8` will run 8 branches in parallel if possible (correspondely using 8 GPUs)
+To get a summary of the different paths run
+
+```bash
+ducttape tapes/main.tape -C tapes/flores101.tconf -p summary > test_summary.tsv
+
+```
+When you run the Baseline plan, you don't get scores for the dev scores. To get the scores, you need to run another plan:
+```bash
+ducttape tapes/main.tape -C $my_tconf -p ScoreDevBaseline -j $num_jobs
+```
+
+After that, you can run a summary mode to get the summary of the dev scores. Make sure you run it immediately after ScoreDev plan.
+```bash
+ducttape tapes/main.tape -C tapes/flores101.tconf -p ScoreDevBaseline summary > dev_summary.tsv
+```
